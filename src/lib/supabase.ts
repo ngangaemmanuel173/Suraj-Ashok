@@ -3,18 +3,25 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// Configured with persistSession: false to force mandatory password authentication on every session
-// Don't throw at import time when env vars are missing (that causes a blank white screen).
-// App.tsx checks `supabaseConfigured` and shows a clear message instead.
+// Fail fast or log clear errors if env vars are missing during production build
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error("FATAL: Missing Supabase environment variables! Check your Vercel project settings.");
+}
+
 export const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
-const rawClient = createClient(supabaseUrl || 'http://localhost:54321', supabaseAnonKey || 'missing-anon-key', {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-    detectSessionInUrl: false,
-  },
-});
+// Use actual values or safe fallbacks only for local development
+const rawClient = createClient(
+  supabaseUrl || 'http://localhost:54321', 
+  supabaseAnonKey || 'missing-anon-key', 
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
+);
 
 let currentSubAccount: string | null = null;
 
@@ -53,29 +60,21 @@ function stampValues(values: any, table?: string): any {
  * are forwarded transparently, but select/update/delete get an
  * automatic .eq('sub_account', slug) filter prepended for non-master
  * portals on non-excluded tables.
- *
- * The wrapper preserves full chainability (.order, .limit, .eq, .single, etc.)
- * by proxying every property access and binding functions to the real builder.
  */
 function wrapBuilder(builder: any, table: string, filterApplied = false): any {
   return new Proxy(builder, {
     get(target, prop, receiver) {
-      // Don't intercept Symbols (e.g. Symbol.toPrimitive, Symbol.iterator)
       if (typeof prop === 'symbol') {
         return Reflect.get(target, prop, receiver);
       }
 
       const value = Reflect.get(target, prop, receiver);
 
-      // Non-function properties pass through as-is
       if (typeof value !== 'function') {
         return value;
       }
 
-      // For methods, return a bound function that wraps the result
       return function (...args: any[]) {
-        // Apply the sub_account filter before select/update/delete
-        // by intercepting the verb call itself
         let result;
         const needsFilter = shouldFilter(table) && !filterApplied;
 
@@ -99,27 +98,21 @@ function wrapBuilder(builder: any, table: string, filterApplied = false): any {
 
         if (prop === 'insert') {
           result = value.call(target, stampValues(args[0], table), ...args.slice(1));
-          if (result && typeof result.then === 'function') return result;
-          // rows are stamped on insert, so the returning .select() must not get a filter
           return wrapBuilder(result, table, true);
         }
 
         if (prop === 'upsert') {
           result = value.call(target, stampValues(args[0], table), ...args.slice(1));
-          if (result && typeof result.then === 'function') return result;
           return wrapBuilder(result, table, true);
         }
 
         // Default: call the method and wrap any chained builder result
         result = value.apply(target, args);
 
-        // If result is a promise (terminal call like .single(), .maybeSingle(),
-        // .then, or the data/error response), don't wrap it
         if (result && typeof result.then === 'function') {
           return result;
         }
 
-        // If result is another builder (chainable), wrap it
         if (result && typeof result === 'object') {
           return wrapBuilder(result, table, filterApplied);
         }
