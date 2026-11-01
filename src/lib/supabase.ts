@@ -16,9 +16,9 @@ const rawClient = createClient(
   supabaseAnonKey || 'missing-anon-key', 
   {
     auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
     },
   }
 );
